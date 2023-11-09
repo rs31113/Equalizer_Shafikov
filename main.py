@@ -3,6 +3,9 @@ from aiogram.utils.markdown import hlink
 from aiogram.types import ParseMode, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from config import TOKEN
 import os
+import soundfile as sf
+from pysndfx import AudioEffectsChain
+import subprocess
 
 
 bot = Bot(token=TOKEN)
@@ -71,7 +74,13 @@ async def speed_up(callback_query: types.CallbackQuery):
     chat_id = callback_query.message['chat']['id']
     await request_processing(callback_query.message, chat_id)
     source_path = f"storage/{chat_id}/source.mp3"
-    result_path = f"storage/{chat_id}/result.mp3"
+    result_path = f"storage/{chat_id}/result.wav"
+    subprocess.call(["ffmpeg", "-i", source_path, result_path])
+
+    s, rate = sf.read(source_path)
+    fx = (AudioEffectsChain().speed(0.8))
+    s = fx(s, sample_in=rate)
+    sf.write(result_path, s, rate, "PCM_16")
     await callback_query.message.answer_document(
         InputFile(result_path),
         caption=bot_link,
