@@ -1,93 +1,83 @@
-from aiogram import Bot, Dispatcher, executor, types
-from aiogram.utils.markdown import hlink
-from aiogram.types import ParseMode, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
-from config import TOKEN
-import os
-import soundfile as sf
-from pysndfx import AudioEffectsChain
-import subprocess
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
+from pydub import AudioSegment
 
+API_TOKEN = "6564932412:AAGh3RqEZQZvASeM_EOlH10Y2WSw1ZAFnHg"
 
-bot = Bot(token=TOKEN)
+bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
-bot_link = hlink("@proton_equalizer_bot", "https://t.me/proton_equalizer_bot")
-mode = ParseMode.HTML
 
 
-def clear_storage(chat_id):
-    for file in os.listdir(f"storage/{chat_id}"):
-        os.remove(f"storage/{chat_id}/{file}")
+@dp.message_handler(content_types=['audio'])
+async def handle_audio(message: types.Message):
+    # Скачиваем аудиофайл
+    audio_path = f"audio_{message.from_user.id}.mp3"
+    await message.audio.download(audio_path)
+
+    # Создаем клавиатуру для выбора действия
+    keyboard = InlineKeyboardMarkup()
+    btn_slow = InlineKeyboardButton("Замедлить", callback_data='slow')
+    btn_speed = InlineKeyboardButton("Ускорить", callback_data='speed')
+    keyboard.row(btn_slow, btn_speed)
+
+    await bot.send_message(message.from_user.id, "Что вы хотите сделать с аудио?", reply_markup=keyboard)
 
 
-async def request_processing(message, chat_id):
-    await bot.delete_message(chat_id=chat_id, message_id=message.message_id)
-    await message.answer("processing...")
+@dp.callback_query_handler(lambda callback_query: True)
+async def process_callback(callback_query: types.CallbackQuery):
+    action = callback_query.data
+    user_id = callback_query.from_user.id
+
+    # Создаем клавиатуру для выбора скорости изменения аудио
+    keyboard = InlineKeyboardMarkup()
+    text = ""  # Инициализируем переменную text
+    speed = 1.0  # Устанавливаем стандартную скорость по умолчанию
+
+    # Для замедления
+    if action == 'slow':
+        btn_09 = InlineKeyboardButton("0.9", callback_data='slow_09')
+        btn_08 = InlineKeyboardButton("0.8", callback_data='slow_08')
+        btn_07 = InlineKeyboardButton("0.7", callback_data='slow_07')
+        keyboard.row(btn_09, btn_08, btn_07)
+        text = "Выберите скорость для замедления:"
+
+    # Для ускорения
+    elif action == 'speed':
+        btn_12 = InlineKeyboardButton("1.2", callback_data='speed_12')
+        btn_13 = InlineKeyboardButton("1.3", callback_data='speed_13')
+        btn_14 = InlineKeyboardButton("1.4", callback_data='speed_14')
+        keyboard.row(btn_12, btn_13, btn_14)
+        text = "Выберите скорость для ускорения:"
+
+    if text:
+        await bot.send_message(user_id, text, reply_markup=keyboard)
+        await callback_query.answer()  # Ответим, чтобы убрать "часики" в Telegram
+
+    # Продолжение обработки выбора скорости...
 
 
-async def reply_to_user(kb, message, valid):
-    if valid:
-        await message.answer(
-            f"what would you like me to do?",
-            reply_markup=kb,
-        )
-    else:
-        await message.answer("hold on, that's not an audio")
+@dp.callback_query_handler(lambda callback_query: callback_query.data.startswith(('slow_', 'speed_')))
+async def process_speed_callback(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    action, speed_value = callback_query.data.split('_')
+
+    audio_path = f"audio_{user_id}.mp3"
+    audio = AudioSegment.from_file(audio_path)
+
+    # Устанавливаем скорость в зависимости от выбранной опции
+    if action == 'slow':
+        speed = float(f"0.{speed_value}")
+    elif action == 'speed':
+        speed = float(f"1.{speed_value}")
+
+    edited_audio = audio.speedup(playback_speed=speed)
+    output_path = f"edited_audio_{user_id}.mp3"
+    edited_audio.export(output_path, format="mp3")
+
+    with open(output_path, 'rb') as edited_file:
+        await bot.send_audio(user_id, audio=edited_file)
 
 
-@dp.message_handler(commands=["start"])
-async def send_welcome(message: types.Message):
-    chat_id = message["chat"]["id"]
-    file = open("start_message.txt")
-    text = file.read()
-    try:
-        os.mkdir(f"storage/{chat_id}")
-    except FileExistsError:
-        pass
-    await message.answer(text)
-
-
-@dp.message_handler(commands=["help"])
-async def send_help(message: types.Message):
-    file = open("help_message.txt")
-    text = file.read()
-    await message.answer(text)
-
-
-@dp.message_handler(content_types=["any"])
-async def voice_processing(message: types.Message):
-    content = message.content_type
-    kb = InlineKeyboardMarkup()
-    valid = False
-    if content == "audio":
-        valid = True
-        chat_id = message["chat"]["id"]
-        source_path = f"storage/{chat_id}/source.mp3"
-        btn_1 = InlineKeyboardButton("speed up", callback_data="speed")
-        btn_2 = InlineKeyboardButton("slow down", callback_data="slow")
-        kb.add(btn_1, btn_2)
-        await message.audio.download(destination_file=source_path)
-    await reply_to_user(kb, message, valid)
-
-
-@dp.callback_query_handler(text=["speed"])
-async def speed_up(callback_query: types.CallbackQuery):
-    chat_id = callback_query.message['chat']['id']
-    await request_processing(callback_query.message, chat_id)
-    source_path = f"storage/{chat_id}/source.mp3"
-    result_path = f"storage/{chat_id}/result.wav"
-    subprocess.call(["ffmpeg", "-i", source_path, result_path])
-
-    s, rate = sf.read(source_path)
-    fx = (AudioEffectsChain().speed(0.8))
-    s = fx(s, sample_in=rate)
-    sf.write(result_path, s, rate, "PCM_16")
-    await callback_query.message.answer_document(
-        InputFile(result_path),
-        caption=bot_link,
-        parse_mode=mode,
-    )
-    clear_storage(chat_id)
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
